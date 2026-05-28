@@ -5,3 +5,4 @@ pydantic
 google-genai
 python-pptx
 openpyxl
+python-docx

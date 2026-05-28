@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from tools.physician_data import get_physician_data as _get_physician_data
 from agents.ppt_agent import run_ppt_agent
 from agents.excel_agent import run_excel_agent
+from agents.report_agent import run_report_agent
 
 load_dotenv()
 
@@ -284,11 +285,14 @@ def _handle_excel_agent(args: dict) -> dict:
 
 
 def _handle_report_agent(args: dict) -> dict:
-    return {
-        "status": "stub",
-        "report_markdown": "# Stub Report\n\nReport agent stub — coming next.",
-        "message": "Report agent stub"
-    }
+    return run_report_agent(
+        report_type=args.get("report_type", "market access report"),
+        physician_list=args.get("physician_list", []),
+        sections=args.get("sections"),
+        icd10_context=args.get("icd10_context", ""),
+        geographic_scope=args.get("geographic_scope", ""),
+        preferences={},
+    )
 
 
 def _handle_sandbox_agent(args: dict) -> dict:
