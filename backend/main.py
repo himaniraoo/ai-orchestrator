@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from fastapi.responses import StreamingResponse
+from agents.orchestrator import run_orchestrator_stream
 
 from tools.physician_data import get_physician_data
 from agents.orchestrator import run_orchestrator
@@ -104,3 +106,10 @@ async def run_query(request: QueryRequest):
         preferences=request.preferences.model_dump(),
     )
     return result
+
+@app.get("/stream")
+async def stream_query(query: str):
+    return StreamingResponse(
+        run_orchestrator_stream(query=query, preferences={}),
+        media_type="text/event-stream",
+    )

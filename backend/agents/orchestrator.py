@@ -1,5 +1,7 @@
 import os
 import json
+import time
+from typing import Generator
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -318,9 +320,176 @@ _TOOL_HANDLERS = {
     "call_sandbox_agent": _handle_sandbox_agent,
 }
 
+# Human-readable labels for the trace UI
+_TOOL_LABELS = {
+    "get_physician_data": "Fetching physician data",
+    "call_ppt_agent":     "PPT agent generating slides",
+    "call_excel_agent":   "Excel agent building workbook",
+    "call_report_agent":  "Report agent writing report",
+    "call_sandbox_agent": "Sandbox agent running analysis",
+}
+
 
 # -------------------------------------------------------------------
-# ORCHESTRATOR AGENT LOOP
+# INTERNAL AGENT LOOP — shared by both sync and streaming paths
+# -------------------------------------------------------------------
+
+def _build_initial_contents(query: str, preferences: dict):
+    preference_context = ""
+    if any(preferences.values()):
+        preference_context = f"\n\nUser preferences panel: {json.dumps(preferences)}"
+    initial_message = query + preference_context
+    return [
+        types.Content(
+            role="user",
+            parts=[types.Part(text=initial_message)]
+        )
+    ]
+
+
+# -------------------------------------------------------------------
+# STREAMING GENERATOR
+# Yields SSE-formatted strings. Each event is a JSON payload.
+#
+# Event types:
+#   { "event": "trace",    "data": { "step", "tool", "label", "status", "args_summary", "elapsed_ms" } }
+#   { "event": "artifact", "data": { "type", "artifact_id", "download_url" } }
+#   { "event": "report",   "data": { "markdown": "..." } }
+#   { "event": "sandbox",  "data": { ...sandbox_result fields... } }
+#   { "event": "summary",  "data": { "text": "..." } }
+#   { "event": "done",     "data": {} }
+#   { "event": "error",    "data": { "message": "..." } }
+# -------------------------------------------------------------------
+
+def _sse(event: str, data: dict) -> str:
+    """Format a single SSE message."""
+    payload = json.dumps({"event": event, "data": data})
+    return f"data: {payload}\n\n"
+
+
+def run_orchestrator_stream(query: str, preferences: dict) -> Generator[str, None, None]:
+    """
+    Generator that runs the orchestrator loop and yields SSE strings.
+    Drop-in replacement stream version of run_orchestrator.
+    """
+    contents = _build_initial_contents(query, preferences)
+    config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_PROMPT,
+        tools=_TOOLS,
+    )
+
+    max_steps = 10
+    step = 0
+
+    try:
+        while step < max_steps:
+            step += 1
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=contents,
+                config=config,
+            )
+
+            candidate = response.candidates[0]
+            parts = candidate.content.parts
+
+            tool_calls = [p for p in parts if p.function_call is not None]
+
+            if not tool_calls:
+                # Gemini is done — emit summary
+                final_text = " ".join(p.text for p in parts if p.text)
+                yield _sse("summary", {"text": final_text})
+                break
+
+            # Append Gemini's response to conversation history
+            contents.append(candidate.content)
+
+            # Execute each tool call
+            tool_result_parts = []
+            for part in tool_calls:
+                fc = part.function_call
+                tool_name = fc.name
+                tool_args = dict(fc.args)
+
+                label = _TOOL_LABELS.get(tool_name, tool_name)
+
+                # Emit "in progress" trace event
+                args_summary = {
+                    k: v for k, v in tool_args.items()
+                    if k not in ("physician_list", "dataset")
+                }
+                yield _sse("trace", {
+                    "step": step,
+                    "tool": tool_name,
+                    "label": label,
+                    "status": "running",
+                    "args_summary": args_summary,
+                })
+
+                t0 = time.monotonic()
+                handler = _TOOL_HANDLERS.get(tool_name)
+                tool_result = handler(tool_args) if handler else {"error": f"Unknown tool: {tool_name}"}
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+                # Emit "done" trace event
+                result_summary = {
+                    k: v for k, v in tool_result.items()
+                    if k not in ("physicians", "report_markdown")
+                }
+                yield _sse("trace", {
+                    "step": step,
+                    "tool": tool_name,
+                    "label": label,
+                    "status": "done",
+                    "args_summary": args_summary,
+                    "result_summary": result_summary,
+                    "elapsed_ms": elapsed_ms,
+                })
+
+                # Emit artifact if produced
+                if (
+                    "artifact_id" in tool_result
+                    and "stub" not in tool_result.get("artifact_id", "")
+                    and tool_result.get("status") == "success"
+                ):
+                    yield _sse("artifact", {
+                        "type": tool_name.replace("call_", "").replace("_agent", ""),
+                        "artifact_id": tool_result["artifact_id"],
+                        "download_url": tool_result["download_url"],
+                    })
+
+                # Emit report markdown
+                if "report_markdown" in tool_result:
+                    yield _sse("report", {"markdown": tool_result["report_markdown"]})
+
+                # Emit sandbox result
+                if tool_name == "call_sandbox_agent":
+                    yield _sse("sandbox", tool_result)
+
+                # Build function response for next Gemini turn
+                tool_result_parts.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=tool_name,
+                            response={"result": tool_result},
+                        )
+                    )
+                )
+
+            contents.append(
+                types.Content(role="tool", parts=tool_result_parts)
+            )
+
+    except Exception as e:
+        yield _sse("error", {"message": str(e)})
+
+    yield _sse("done", {})
+
+
+# -------------------------------------------------------------------
+# ORIGINAL SYNC run_orchestrator — UNCHANGED
+# Still used by POST /query. Do not remove.
 # -------------------------------------------------------------------
 
 def run_orchestrator(query: str, preferences: dict) -> dict:
@@ -329,7 +498,6 @@ def run_orchestrator(query: str, preferences: dict) -> dict:
     Returns structured result with agent trace + artifacts.
     """
 
-    # Inject structured preferences as additional context
     preference_context = ""
     if any(preferences.values()):
         preference_context = f"\n\nUser preferences panel: {json.dumps(preferences)}"
@@ -343,7 +511,6 @@ def run_orchestrator(query: str, preferences: dict) -> dict:
     final_text = "Orchestration complete."
     max_steps = 10
 
-    # Build conversation history for the new SDK
     contents = [
         types.Content(
             role="user",
@@ -369,24 +536,14 @@ def run_orchestrator(query: str, preferences: dict) -> dict:
         candidate = response.candidates[0]
         parts = candidate.content.parts
 
-        # Check for tool calls
-        tool_calls = [
-            p for p in parts
-            if p.function_call is not None
-        ]
+        tool_calls = [p for p in parts if p.function_call is not None]
 
         if not tool_calls:
-            # Gemini is done — extract final text
-            final_text = " ".join(
-                p.text for p in parts
-                if p.text
-            )
+            final_text = " ".join(p.text for p in parts if p.text)
             break
 
-        # Append Gemini's response to history
         contents.append(candidate.content)
 
-        # Execute each tool call and collect results
         tool_result_parts = []
         for part in tool_calls:
             fc = part.function_call
@@ -396,7 +553,6 @@ def run_orchestrator(query: str, preferences: dict) -> dict:
             handler = _TOOL_HANDLERS.get(tool_name)
             tool_result = handler(tool_args) if handler else {"error": f"Unknown tool: {tool_name}"}
 
-            # Build agent trace — exclude large lists
             agent_trace.append({
                 "step": step,
                 "tool": tool_name,
@@ -410,7 +566,6 @@ def run_orchestrator(query: str, preferences: dict) -> dict:
                 }
             })
 
-            # Collect real artifacts
             if (
                 "artifact_id" in tool_result
                 and "stub" not in tool_result.get("artifact_id", "")
@@ -428,7 +583,6 @@ def run_orchestrator(query: str, preferences: dict) -> dict:
             if tool_name == "call_sandbox_agent":
                 sandbox_result = tool_result
 
-            # Build function response part for new SDK
             tool_result_parts.append(
                 types.Part(
                     function_response=types.FunctionResponse(
@@ -438,12 +592,8 @@ def run_orchestrator(query: str, preferences: dict) -> dict:
                 )
             )
 
-        # Append tool results back into conversation
         contents.append(
-            types.Content(
-                role="tool",
-                parts=tool_result_parts,
-            )
+            types.Content(role="tool", parts=tool_result_parts)
         )
 
     return {
