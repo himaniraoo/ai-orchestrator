@@ -12,7 +12,22 @@ const SPECIALTIES = [
 ];
 
 const STATES = [
-  "CA","NY","TX","MA","MD","PA","IL","MN","TN","GA","WA","CO","OH","MI"
+  "CA",
+  "CO",
+  "CT",
+  "GA",
+  "IL",
+  "MA",
+  "MD",
+  "MI",
+  "MN",
+  "NJ",
+  "NY",
+  "OH",
+  "PA",
+  "TN",
+  "TX",
+  "WA",
 ];
 
 const ICD10_OPTIONS = [
@@ -65,6 +80,12 @@ export default function App() {
       traceEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [traceSteps]);
+
+  useEffect(() => {
+    return () => {
+      esRef.current?.close();
+    };
+  }, []);
 
   const toggleState = (s) => {
     setSelectedStates((prev) =>
@@ -124,7 +145,13 @@ export default function App() {
         }
 
         if (event === "artifact") {
-          setArtifacts((prev) => [...prev, data]);
+          setArtifacts((prev) => {
+            const exists = prev.some(
+              (a) => a.artifact_id === data.artifact_id
+            );
+          
+            return exists ? prev : [...prev, data];
+          });
         }
 
         if (event === "report") {
@@ -176,7 +203,8 @@ export default function App() {
     return map[type] || type.toUpperCase();
   };
 
-  const artifactExt = (id) => id.split(".").pop().toUpperCase();
+  const artifactExt = (id = "") =>
+    id.includes(".") ? id.split(".").pop().toUpperCase() : "";
 
   return (
     <div style={styles.root}>

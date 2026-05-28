@@ -292,9 +292,10 @@ def run_report_agent(
         docx_artifact = None
 
     return {
-        "status": "success",
-        "report_markdown": report_markdown,
-        "docx_artifact": docx_artifact,
-        "section_count": len(sections),
-        "physician_count": len(physician_list),
-    }
+    "status": "success",
+    "report_markdown": report_markdown,
+    "artifact_id": docx_artifact["artifact_id"] if docx_artifact else None,
+    "download_url": docx_artifact["download_url"] if docx_artifact else None,
+    "section_count": len(sections),
+    "physician_count": len(physician_list),
+}
