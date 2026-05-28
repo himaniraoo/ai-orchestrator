@@ -6,3 +6,5 @@ google-genai
 python-pptx
 openpyxl
 python-docx
+e2b==1.3.5
+e2b-code-interpreter==1.2.1

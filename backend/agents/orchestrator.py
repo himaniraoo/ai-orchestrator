@@ -8,6 +8,7 @@ from tools.physician_data import get_physician_data as _get_physician_data
 from agents.ppt_agent import run_ppt_agent
 from agents.excel_agent import run_excel_agent
 from agents.report_agent import run_report_agent
+from agents.sandbox_agent import run_sandbox_agent
 
 load_dotenv()
 
@@ -232,6 +233,12 @@ You do not produce artifacts yourself — you delegate to specialized agents via
    - Which agents were called and what they produced
    - Any important observations about the data
 
+7. For comparative concentration or distribution analyses
+(e.g. "highest concentration of high-volume physicians"),
+DO NOT pre-filter the dataset by volume_threshold.
+The sandbox agent must receive the full physician population
+so it can compute proportions correctly.
+
 ## CONTEXT MAPPING
 When the user mentions:
 - "NSCLC" → ICD-10 codes C341, C342
@@ -296,13 +303,11 @@ def _handle_report_agent(args: dict) -> dict:
 
 
 def _handle_sandbox_agent(args: dict) -> dict:
-    return {
-        "status": "stub",
-        "code": "# stub code",
-        "output": "Stub output",
-        "chart_url": None,
-        "message": "Sandbox agent stub — coming next"
-    }
+    return run_sandbox_agent(
+        code_goal=args.get("code_goal", ""),
+        dataset=args.get("dataset", []),
+        chart_type=args.get("chart_type", ""),
+    )
 
 
 _TOOL_HANDLERS = {
