@@ -4,3 +4,4 @@ python-dotenv
 pydantic
 google-genai
 python-pptx
+openpyxl

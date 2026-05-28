@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from tools.physician_data import get_physician_data as _get_physician_data
 from agents.ppt_agent import run_ppt_agent
+from agents.excel_agent import run_excel_agent
 
 load_dotenv()
 
@@ -274,12 +275,12 @@ def _handle_ppt_agent(args: dict) -> dict:
 
 
 def _handle_excel_agent(args: dict) -> dict:
-    return {
-        "status": "stub",
-        "artifact_id": "stub_workbook.xlsx",
-        "download_url": "/artifacts/stub_workbook.xlsx",
-        "message": "Excel agent stub — coming next"
-    }
+    return run_excel_agent(
+        analysis_type=args.get("analysis_type", "physician breakdown"),
+        physician_list=args.get("physician_list", []),
+        dimensions=args.get("dimensions"),
+        icd10_codes=args.get("icd10_codes"),
+    )
 
 
 def _handle_report_agent(args: dict) -> dict:

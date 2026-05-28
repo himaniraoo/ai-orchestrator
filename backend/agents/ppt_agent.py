@@ -1,9 +1,9 @@
 import os
 import json
-import uuid
+import uuid # unique file names
 from pathlib import Path
 from datetime import date
-from collections import Counter
+from collections import Counter # used for counting frequencies
 
 from google import genai
 from google.genai import types
@@ -17,7 +17,7 @@ load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts"
+ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts" # saves the output here
 ARTIFACTS_DIR.mkdir(exist_ok=True)
 
 # -------------------------------------------------------------------
