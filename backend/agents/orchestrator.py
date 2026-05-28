@@ -1,0 +1,445 @@
+import os
+import json
+from google import genai
+from google.genai import types
+from dotenv import load_dotenv
+
+from tools.physician_data import get_physician_data as _get_physician_data
+from agents.ppt_agent import run_ppt_agent
+
+load_dotenv()
+
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+# -------------------------------------------------------------------
+# TOOL DEFINITIONS
+# These are what Gemini sees — descriptions must be precise because
+# Gemini decides WHICH tool to call based purely on these descriptions.
+# Vague descriptions = wrong routing = failed assignment.
+# -------------------------------------------------------------------
+
+_TOOLS = [
+    types.Tool(function_declarations=[
+        types.FunctionDeclaration(
+            name="get_physician_data",
+            description=(
+                "Retrieves filtered physician records from the DocNexus database. "
+                "ALWAYS call this first before calling any agent tool. "
+                "Use this to fetch the physician population relevant to the user's query. "
+                "All parameters are optional — omit any you don't have signal for."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "specialty": types.Schema(
+                        type=types.Type.STRING,
+                        description="Physician specialty to filter by. Examples: 'Medical Oncology', 'Pulmonology', 'Thoracic Surgery', 'Radiation Oncology'"
+                    ),
+                    "states": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description="List of US state abbreviations to filter by. Examples: ['CA', 'NY', 'TX']"
+                    ),
+                    "icd10_codes": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description="List of ICD-10 codes to filter by. Physician must have at least one. Examples: ['C341', 'C342']"
+                    ),
+                    "volume_threshold": types.Schema(
+                        type=types.Type.STRING,
+                        enum=["low", "high", "very_high"],
+                        description="Minimum volume tier. 'high' returns high and very_high physicians."
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="call_ppt_agent",
+            description=(
+                "Generates a downloadable PowerPoint slide deck (.pptx). "
+                "Call this when the user asks for a 'slide deck', 'presentation', 'PowerPoint', or 'slides'. "
+                "Requires physician data — call get_physician_data first."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                required=["query", "topic", "physician_list"],
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="The original user query verbatim — used for the title slide query summary"
+                    ),
+                    "topic": types.Schema(
+                        type=types.Type.STRING,
+                        description="The title/topic of the presentation. Be specific."
+                    ),
+                    "physician_list": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.OBJECT),
+                        description="List of physician records returned by get_physician_data"
+                    ),
+                    "icd10_codes": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description="ICD-10 codes relevant to this presentation"
+                    ),
+                    "slide_count": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Number of slides to generate. Default 4."
+                    ),
+                    "style_notes": types.Schema(
+                        type=types.Type.STRING,
+                        description="Any style or content preferences from the user query"
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="call_excel_agent",
+            description=(
+                "Generates a downloadable Excel workbook (.xlsx) with multiple sheets. "
+                "Call this when the user asks for a 'spreadsheet', 'Excel', 'breakdown', 'workbook', or 'table'. "
+                "Requires physician data — call get_physician_data first."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                required=["analysis_type", "physician_list"],
+                properties={
+                    "analysis_type": types.Schema(
+                        type=types.Type.STRING,
+                        description="What kind of analysis the Excel should show."
+                    ),
+                    "physician_list": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.OBJECT),
+                        description="List of physician records returned by get_physician_data"
+                    ),
+                    "dimensions": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description="Breakdown dimensions. Examples: ['state', 'specialty', 'icd10_code']"
+                    ),
+                    "icd10_codes": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description="ICD-10 codes relevant to this analysis"
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="call_report_agent",
+            description=(
+                "Generates a structured written market access report in markdown format. "
+                "Call this when the user asks for a 'report', 'write-up', or 'market access report'. "
+                "Requires physician data — call get_physician_data first."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                required=["report_type", "physician_list"],
+                properties={
+                    "report_type": types.Schema(
+                        type=types.Type.STRING,
+                        description="Type of report. Examples: 'market access report', 'physician landscape report'"
+                    ),
+                    "sections": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description="Sections to include in the report"
+                    ),
+                    "physician_list": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.OBJECT),
+                        description="List of physician records returned by get_physician_data"
+                    ),
+                    "icd10_context": types.Schema(
+                        type=types.Type.STRING,
+                        description="ICD-10 context string for the report"
+                    ),
+                    "geographic_scope": types.Schema(
+                        type=types.Type.STRING,
+                        description="Geographic scope of the report"
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="call_sandbox_agent",
+            description=(
+                "Generates and executes Python code to perform data analysis or produce a chart. "
+                "Call this when the user asks to 'run an analysis', 'plot', 'show a chart', or 'visualize'. "
+                "Requires physician data — call get_physician_data first."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                required=["code_goal", "dataset"],
+                properties={
+                    "code_goal": types.Schema(
+                        type=types.Type.STRING,
+                        description="Plain English description of what the code should do."
+                    ),
+                    "dataset": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.OBJECT),
+                        description="The physician dataset to analyze"
+                    ),
+                    "chart_type": types.Schema(
+                        type=types.Type.STRING,
+                        description="Type of chart to generate. Examples: 'bar', 'pie', 'scatter'"
+                    ),
+                },
+            ),
+        ),
+    ])
+]
+
+# -------------------------------------------------------------------
+# SYSTEM PROMPT
+# -------------------------------------------------------------------
+
+_SYSTEM_PROMPT = """
+You are the Orchestrator Agent for DocNexus, a pharmaceutical intelligence platform.
+Your users are medical affairs teams, market access analysts, and commercial strategy leads
+at pharmaceutical and medical device companies.
+
+## YOUR ROLE
+You receive a natural language query from a user and decompose it into a sequence of
+tool calls that produce the right artifacts (slide decks, Excel files, reports, analyses).
+You do not produce artifacts yourself — you delegate to specialized agents via tools.
+
+## STRICT RULES — FOLLOW THESE EXACTLY
+
+1. ALWAYS call get_physician_data FIRST before calling any agent tool.
+   You need real physician data to pass to the agents. Never call an agent with an empty physician list.
+
+2. Parse the user's intent carefully:
+   - "slide deck" / "PowerPoint" / "presentation" / "slides" → call_ppt_agent
+   - "Excel" / "spreadsheet" / "breakdown" / "workbook" → call_excel_agent
+   - "report" / "write-up" / "market access report" / "summary" → call_report_agent
+   - "analyze" / "plot" / "chart" / "visualize" / "run an analysis" → call_sandbox_agent
+
+3. If the user asks for MULTIPLE artifacts (e.g. "a slide deck AND an Excel breakdown"),
+   call ALL relevant agent tools. Do not skip any.
+
+4. Pass the FULL physician list returned by get_physician_data to each agent.
+   Do not filter or truncate the list yourself.
+
+5. Always pass the original user query verbatim as the "query" parameter to call_ppt_agent.
+
+6. After all tools have been called, return a brief plain-text summary of:
+   - How many physicians matched the query
+   - Which agents were called and what they produced
+   - Any important observations about the data
+
+## CONTEXT MAPPING
+When the user mentions:
+- "NSCLC" → ICD-10 codes C341, C342
+- "high volume" / "high-volume" → volume_threshold: "high"
+- "very high volume" → volume_threshold: "very_high"
+- "oncologists" → specialty: "Medical Oncology"
+- "pulmonologists" → specialty: "Pulmonology"
+- State names (e.g. "California", "New York") → convert to abbreviations (CA, NY)
+- "Northeast" → states: [NY, MA, CT, NJ, PA, MD]
+
+## WHAT YOU MUST NOT DO
+- Do not make up physician data
+- Do not call agent tools before get_physician_data
+- Do not return a final answer without calling at least one agent tool
+- Do not ignore part of a multi-artifact request
+"""
+
+
+# -------------------------------------------------------------------
+# TOOL HANDLERS
+# -------------------------------------------------------------------
+
+def _handle_get_physician_data(args: dict) -> dict:
+    physicians = _get_physician_data(
+        specialty=args.get("specialty"),
+        states=args.get("states"),
+        icd10_codes=args.get("icd10_codes"),
+        volume_threshold=args.get("volume_threshold"),
+    )
+    return {"count": len(physicians), "physicians": physicians}
+
+
+def _handle_ppt_agent(args: dict) -> dict:
+    return run_ppt_agent(
+        query=args.get("query", ""),
+        topic=args.get("topic", "NSCLC Physician Landscape"),
+        physician_list=args.get("physician_list", []),
+        icd10_codes=args.get("icd10_codes"),
+        slide_count=args.get("slide_count", 4),
+        style_notes=args.get("style_notes", ""),
+    )
+
+
+def _handle_excel_agent(args: dict) -> dict:
+    return {
+        "status": "stub",
+        "artifact_id": "stub_workbook.xlsx",
+        "download_url": "/artifacts/stub_workbook.xlsx",
+        "message": "Excel agent stub — coming next"
+    }
+
+
+def _handle_report_agent(args: dict) -> dict:
+    return {
+        "status": "stub",
+        "report_markdown": "# Stub Report\n\nReport agent stub — coming next.",
+        "message": "Report agent stub"
+    }
+
+
+def _handle_sandbox_agent(args: dict) -> dict:
+    return {
+        "status": "stub",
+        "code": "# stub code",
+        "output": "Stub output",
+        "chart_url": None,
+        "message": "Sandbox agent stub — coming next"
+    }
+
+
+_TOOL_HANDLERS = {
+    "get_physician_data": _handle_get_physician_data,
+    "call_ppt_agent": _handle_ppt_agent,
+    "call_excel_agent": _handle_excel_agent,
+    "call_report_agent": _handle_report_agent,
+    "call_sandbox_agent": _handle_sandbox_agent,
+}
+
+
+# -------------------------------------------------------------------
+# ORCHESTRATOR AGENT LOOP
+# -------------------------------------------------------------------
+
+def run_orchestrator(query: str, preferences: dict) -> dict:
+    """
+    Runs the full orchestrator agent loop.
+    Returns structured result with agent trace + artifacts.
+    """
+
+    # Inject structured preferences as additional context
+    preference_context = ""
+    if any(preferences.values()):
+        preference_context = f"\n\nUser preferences panel: {json.dumps(preferences)}"
+
+    initial_message = query + preference_context
+
+    agent_trace = []
+    artifacts = []
+    report_markdown = None
+    sandbox_result = None
+    final_text = "Orchestration complete."
+    max_steps = 10
+
+    # Build conversation history for the new SDK
+    contents = [
+        types.Content(
+            role="user",
+            parts=[types.Part(text=initial_message)]
+        )
+    ]
+
+    config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_PROMPT,
+        tools=_TOOLS,
+    )
+
+    step = 0
+    while step < max_steps:
+        step += 1
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config=config,
+        )
+
+        candidate = response.candidates[0]
+        parts = candidate.content.parts
+
+        # Check for tool calls
+        tool_calls = [
+            p for p in parts
+            if p.function_call is not None
+        ]
+
+        if not tool_calls:
+            # Gemini is done — extract final text
+            final_text = " ".join(
+                p.text for p in parts
+                if p.text
+            )
+            break
+
+        # Append Gemini's response to history
+        contents.append(candidate.content)
+
+        # Execute each tool call and collect results
+        tool_result_parts = []
+        for part in tool_calls:
+            fc = part.function_call
+            tool_name = fc.name
+            tool_args = dict(fc.args)
+
+            handler = _TOOL_HANDLERS.get(tool_name)
+            tool_result = handler(tool_args) if handler else {"error": f"Unknown tool: {tool_name}"}
+
+            # Build agent trace — exclude large lists
+            agent_trace.append({
+                "step": step,
+                "tool": tool_name,
+                "args_summary": {
+                    k: v for k, v in tool_args.items()
+                    if k not in ("physician_list", "dataset")
+                },
+                "result_summary": {
+                    k: v for k, v in tool_result.items()
+                    if k not in ("physicians", "report_markdown")
+                }
+            })
+
+            # Collect real artifacts
+            if (
+                "artifact_id" in tool_result
+                and "stub" not in tool_result.get("artifact_id", "")
+                and tool_result.get("status") == "success"
+            ):
+                artifacts.append({
+                    "type": tool_name.replace("call_", "").replace("_agent", ""),
+                    "artifact_id": tool_result["artifact_id"],
+                    "download_url": tool_result["download_url"],
+                })
+
+            if "report_markdown" in tool_result:
+                report_markdown = tool_result["report_markdown"]
+
+            if tool_name == "call_sandbox_agent":
+                sandbox_result = tool_result
+
+            # Build function response part for new SDK
+            tool_result_parts.append(
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name=tool_name,
+                        response={"result": tool_result},
+                    )
+                )
+            )
+
+        # Append tool results back into conversation
+        contents.append(
+            types.Content(
+                role="tool",
+                parts=tool_result_parts,
+            )
+        )
+
+    return {
+        "agent_trace": agent_trace,
+        "artifacts": artifacts,
+        "report_markdown": report_markdown,
+        "sandbox_result": sandbox_result,
+        "summary": final_text,
+    }
