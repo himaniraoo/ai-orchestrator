@@ -108,8 +108,24 @@ async def run_query(request: QueryRequest):
     return result
 
 @app.get("/stream")
-async def stream_query(query: str):
+async def stream_query(
+    query: str,
+    specialty: Optional[str] = Query(None),
+    states: Optional[list[str]] = Query(None),
+    icd10_codes: Optional[list[str]] = Query(None),
+    volume_threshold: Optional[str] = Query(None),
+):
+    preferences = {
+        "specialty": specialty,
+        "states": states,
+        "icd10_codes": icd10_codes,
+        "volume_threshold": volume_threshold,
+    }
     return StreamingResponse(
-        run_orchestrator_stream(query=query, preferences={}),
+        run_orchestrator_stream(query=query, preferences=preferences),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
