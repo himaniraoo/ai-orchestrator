@@ -20,7 +20,6 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # TOOL DEFINITIONS
 # These are what Gemini sees — descriptions must be precise because
 # Gemini decides WHICH tool to call based purely on these descriptions.
-# Vague descriptions = wrong routing = failed assignment.
 # -------------------------------------------------------------------
 
 _TOOLS = [

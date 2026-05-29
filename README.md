@@ -33,6 +33,10 @@ or:
 }
 ```
 
+# WORKING DEMO LINK
+
+https://drive.google.com/file/d/1CMsECEgOD0tfApUqvgIVDvoamposJ1SN/view?usp=sharing
+
 The orchestrator automatically:
 
 1. Understands the user intent
@@ -426,3 +430,4 @@ Given more time, the next improvements would include:
 8. Structured preference context system  
 9. Frontend visualization and rendering  
 10. End-to-end AI workflow demonstration
+
