@@ -192,21 +192,17 @@ Artifacts + Streamed Results
 
 ## Backend
 
-- Python
-- FastAPI
-- Gemini 2.5 Flash (`google-genai`)
-- python-pptx
-- openpyxl
-- python-docx
-- e2b-code-interpreter
+- **Python + FastAPI** — async-native with built-in SSE support via `StreamingResponse`
+- **Gemini 2.5 Flash (`google-genai`)** — fast inference and strong native function calling; Flash over Pro because routing latency matters more than reasoning depth
+- **python-pptx** — server-side PowerPoint generation
+- **openpyxl** — server-side Excel generation; pure Python with no LLM involvement since LLMs make arithmetic errors
+- **python-docx** — server-side Word document generation
+- **e2b-code-interpreter** — secure cloud sandbox; handles security and file I/O without running `exec()` server-side
 
 ## Frontend
 
-- React
-- Vite
-- Server-Sent Events (SSE)
-
----
+- **React + Vite** — fast setup, native `EventSource` for SSE
+- **Server-Sent Events** — simpler than WebSockets since the client only needs to receive updates, not send them
 
 # LLM Framework Choice
 
