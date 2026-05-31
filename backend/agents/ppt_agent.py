@@ -61,7 +61,7 @@ The first character of your response must be '{'.
 {
   "title_slide": {
     "title": "<deck title, max 10 words, specific to the query>",
-    "query_summary": "<one sentence: what the user asked for, verbatim intent>",
+    "query_summary": "<one sentence plain-English summary of what the user asked for — synthesise the intent, do NOT copy the raw query>",
     "icd10_scope": "<codes with clinical names, e.g. C341 (Upper Lobe NSCLC)>"
   },
   "population_slide": {
